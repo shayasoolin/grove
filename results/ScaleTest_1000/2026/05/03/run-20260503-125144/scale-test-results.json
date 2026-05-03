@@ -1,0 +1,55 @@
+{
+  "testName": "ScaleTest_1000",
+  "runID": "run-20260503-125144",
+  "namespace": "default",
+  "pcsCount": 1,
+  "groveImage": "fake-ci/grove-operator:scale-test-smoke",
+  "phases": [
+    {
+      "name": "deploy",
+      "startTime": "2026-05-03T12:51:44+00:00",
+      "endTime": "2026-05-03T12:51:44.740000+00:00",
+      "durationFromTestStartSeconds": 0.0,
+      "milestones": [
+        {
+          "name": "pods-created",
+          "timestamp": "2026-05-03T12:51:44.440000+00:00",
+          "durationFromPhaseStartSeconds": 0.44
+        },
+        {
+          "name": "pods-ready",
+          "timestamp": "2026-05-03T12:51:44.700000+00:00",
+          "durationFromPhaseStartSeconds": 0.7
+        },
+        {
+          "name": "pcs-available",
+          "timestamp": "2026-05-03T12:51:44.730000+00:00",
+          "durationFromPhaseStartSeconds": 0.73
+        }
+      ]
+    },
+    {
+      "name": "delete",
+      "startTime": "2026-05-03T12:51:44.740000+00:00",
+      "endTime": "2026-05-03T12:51:45.160000+00:00",
+      "durationFromTestStartSeconds": 0.74,
+      "milestones": [
+        {
+          "name": "pcs-deleted",
+          "timestamp": "2026-05-03T12:51:45.130000+00:00",
+          "durationFromPhaseStartSeconds": 0.39
+        }
+      ]
+    }
+  ],
+  "testDurationSeconds": 1.16,
+  "k8sClient": {
+    "qps": 100,
+    "burst": 150
+  },
+  "controllerMaxReconcile": {
+    "podCliqueSet": 20,
+    "podCliqueScalingGroup": 20,
+    "podClique": 20
+  }
+}
