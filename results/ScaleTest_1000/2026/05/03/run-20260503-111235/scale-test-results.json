@@ -8,41 +8,41 @@
     {
       "name": "deploy",
       "startTime": "2026-05-03T11:12:35+00:00",
-      "endTime": "2026-05-03T11:12:35.620000+00:00",
+      "endTime": "2026-05-03T11:12:35.880000+00:00",
       "durationFromTestStartSeconds": 0.0,
       "milestones": [
         {
           "name": "pods-created",
-          "timestamp": "2026-05-03T11:12:35.360000+00:00",
-          "durationFromPhaseStartSeconds": 0.36
+          "timestamp": "2026-05-03T11:12:35.490000+00:00",
+          "durationFromPhaseStartSeconds": 0.49
         },
         {
           "name": "pods-ready",
-          "timestamp": "2026-05-03T11:12:35.590000+00:00",
-          "durationFromPhaseStartSeconds": 0.59
+          "timestamp": "2026-05-03T11:12:35.820000+00:00",
+          "durationFromPhaseStartSeconds": 0.82
         },
         {
           "name": "pcs-available",
-          "timestamp": "2026-05-03T11:12:35.610000+00:00",
-          "durationFromPhaseStartSeconds": 0.61
+          "timestamp": "2026-05-03T11:12:35.870000+00:00",
+          "durationFromPhaseStartSeconds": 0.87
         }
       ]
     },
     {
       "name": "delete",
-      "startTime": "2026-05-03T11:12:35.620000+00:00",
-      "endTime": "2026-05-03T11:12:35.970000+00:00",
-      "durationFromTestStartSeconds": 0.62,
+      "startTime": "2026-05-03T11:12:35.880000+00:00",
+      "endTime": "2026-05-03T11:12:36.350000+00:00",
+      "durationFromTestStartSeconds": 0.88,
       "milestones": [
         {
           "name": "pcs-deleted",
-          "timestamp": "2026-05-03T11:12:35.960000+00:00",
-          "durationFromPhaseStartSeconds": 0.34
+          "timestamp": "2026-05-03T11:12:36.320000+00:00",
+          "durationFromPhaseStartSeconds": 0.44
         }
       ]
     }
   ],
-  "testDurationSeconds": 0.97,
+  "testDurationSeconds": 1.35,
   "k8sClient": {
     "qps": 100,
     "burst": 150
