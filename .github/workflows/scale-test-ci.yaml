@@ -44,6 +44,12 @@ jobs:
         run: |
           make scale-cluster-up E2E_CREATE_FLAGS='--dind-memory-mode --set pyroscope.enabled=false --set grove.profiling=false'
 
+      - name: Debug runner with tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
+          limit-access-to-actor: true
+
       - name: Run scale test
         working-directory: operator/e2e/tests/scale
         env:
