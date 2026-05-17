@@ -259,6 +259,8 @@ def create_cluster(cfg: ClusterConfig) -> None:
             "--registry-create",
             f"registry:0.0.0.0:{cfg.registry_port}",
             "--k3s-arg",
+            "--cluster-init@server:0",
+            "--k3s-arg",
             f"--node-taint={E2E_NODE_ROLE_KEY}=agent:NoSchedule@agent:*",
             "--k3s-node-label",
             f"{E2E_NODE_ROLE_KEY}=agent@agent:*",
