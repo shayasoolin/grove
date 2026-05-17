@@ -1,0 +1,45 @@
+{
+  "testName": "ScaleTest_5000_Deletion",
+  "runID": "run-20260517-134338",
+  "namespace": "default",
+  "pcsCount": 1,
+  "groveImage": "registry:5001/grove-operator:E2E_TESTS@sha256:7ff846b9e34e1e0c2b0736a2d224aaf627f1abcd2935eb950cb4685cc404a064",
+  "phases": [
+    {
+      "name": "deploy",
+      "startTime": "2026-05-17T13:43:38.5780653Z",
+      "endTime": "2026-05-17T13:45:06.834838218Z",
+      "durationFromTestStartSeconds": 0.00004312,
+      "milestones": [
+        {
+          "name": "pods-created",
+          "timestamp": "2026-05-17T13:45:06.834720588Z",
+          "durationFromPhaseStartSeconds": 88.2566553
+        }
+      ]
+    },
+    {
+      "name": "delete",
+      "startTime": "2026-05-17T13:45:06.834876419Z",
+      "endTime": "2026-05-17T13:54:25.201887351Z",
+      "durationFromTestStartSeconds": 88.25685424,
+      "milestones": [
+        {
+          "name": "pcs-deleted",
+          "timestamp": "2026-05-17T13:54:25.201837338Z",
+          "durationFromPhaseStartSeconds": 558.366960919
+        }
+      ]
+    }
+  ],
+  "testDurationSeconds": 646.623884628,
+  "k8sClient": {
+    "qps": 100,
+    "burst": 150
+  },
+  "controllerMaxReconcile": {
+    "podCliqueSet": 20,
+    "podCliqueScalingGroup": 20,
+    "podClique": 20
+  }
+}
