@@ -46,6 +46,7 @@ jobs:
 
       - name: Debug runner with tmate
         uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 1
         with:
           detached: true
           limit-access-to-actor: true
