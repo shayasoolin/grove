@@ -107,7 +107,7 @@ When a gang scope is deleted and recreated during a gang restart, terminal pods 
 
 ### Completion Policy
 
-Completion-aware behavior is rooted at the `PodClique` level. A `PodClique` becomes completion-aware by setting at least one concrete supported leaf under `spec.policy.completion`. Omitting `policy.completion` keeps the `PodClique` in regular mode.
+Completion-aware behavior is rooted at the `PodClique` level. A `PodClique` becomes completion-aware by setting at least one concrete supported field under `spec.policy.completion`. Omitting `policy.completion` keeps the `PodClique` in regular mode.
 
 `PodCliqueScalingGroup` and `PodCliqueSet` become completion-aware when they contain at least one completion-aware direct child. Their own `spec.policy.completion` is optional and configures how the parent evaluates those children. Setting `policy.completion` on a parent with no completion-aware direct children is invalid. When `targetNames` is set, each listed name must refer to a completion-aware direct child.
 
@@ -130,7 +130,7 @@ Policy *PodCliqueRunPolicy `json:"policy,omitempty"`
 
 type PodCliqueRunPolicy struct {
     // Completion configures completion-aware behavior for this PodClique. Setting
-    // at least one supported leaf enables completion-aware behavior.
+    // at least one supported field enables completion-aware behavior.
     // +optional
     Completion *PodCliqueCompletionPolicy `json:"completion,omitempty"`
 }
@@ -467,7 +467,7 @@ This approach couples workload lifecycle semantics to kubelet container restart 
 
 A concrete mode field such as `runPolicy`, `completionPolicy`, or `completionMode` was considered. It would make the mode signal explicit, but it would also add a field whose only job is to classify the resource separately from the policy knobs that define its behavior.
 
-This GREP uses concrete leaves under `spec.policy.completion` as the opt-in signal instead. An empty `policy.completion` object is invalid, so the API does not rely on a bare section existing without behavior. At the same time, the nested policy shape keeps completion and failure controls together and leaves room for future extensions under the same API surface.
+This GREP uses concrete fields under `spec.policy.completion` as the opt-in signal instead. An empty `policy.completion` object is invalid, so the API does not rely on a bare section existing without behavior. At the same time, the nested policy shape keeps completion and failure controls together and preserves room for future extensions under the same API surface.
 
 ### Status phase for job observability
 
