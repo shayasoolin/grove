@@ -346,6 +346,7 @@ This distinction is important for partial-completion policies. For example, a `P
 **On `PodCliqueScalingGroup` replica terminal state:**
 - Delete active pods and non-terminal child `PodClique`s belonging to that replica.
 - This covers `completedNames`, where only selected children are required for completion and the remaining children may still be running.
+- Pod deletion uses normal Kubernetes termination semantics; users should set `podSpec.terminationGracePeriodSeconds` when workers need time to finish checkpoint flushes, final collectives, or other shutdown work.
 
 **On `PodCliqueSet` replica or resource terminal state:**
 - Delete active pods and non-terminal child `PodClique`s / `PodCliqueScalingGroup`s belonging to the terminal scope.
