@@ -64,7 +64,7 @@ This GREP closes that gap by extending Grove's existing hierarchy with completio
 
 Job support extends Grove's existing workload hierarchy with completion-aware behavior. The root signal is at the `PodClique` level: a `PodClique` becomes completion-aware by setting at least one supported field under `spec.policy.completion`. Parent `PodCliqueScalingGroup` and `PodCliqueSet` resources become completion-aware bottom-up when they contain completion-aware children. A parent may set its own `spec.policy.completion` to configure parent-level completion and failure behavior, but that policy does not make child `PodClique`s completion-aware.
 
-Completion and failure are evaluated bottom-up. At each level, the resource is **Completed** when all required pods or completion-aware direct children have succeeded, and **Failed** when enough pods or children have failed that the completion criterion is unreachable — regardless of how remaining children resolve. Once a resource reaches **Failed**, it cannot subsequently become **Completed**.
+Completion and failure are evaluated bottom-up. At each level, the resource is **Completed** when all required pods or completion-aware direct children have succeeded, and **Failed** when a required failure or exhausted gang-attempt budget makes the current scope terminate unsuccessfully. If a named-child completion criterion is already satisfied in the same reconciliation snapshot, completion takes precedence over failures from completion-aware children outside that criterion. Once a resource reaches **Failed**, it cannot subsequently become **Completed**.
 
 When a completion-aware `PodClique` fails, its completion-aware parent (`PodCliqueScalingGroup` or `PodCliqueSet`) deletes and recreates the affected gang as a unit. This consumes one restart from the parent's per-replica budget. A `PodCliqueScalingGroup` or `PodCliqueSet` fails when enough of its replicas have exhausted their budget that the completion target is unreachable.
 
@@ -251,7 +251,7 @@ Regular-mode `PodClique`s never set `Completed` or `Failed`.
 
 For a completion-aware `PodCliqueScalingGroup`, evaluation is two-level:
 
-1. *Replica state*: a replica is **Completed** when all required completion-aware child `PodClique`s are `Completed` — either all completion-aware children, or the named children in `policy.completion.success.completedNames` when it is set. A replica is permanently **Failed** when a required child `PodClique` fails and no restart budget remains (`maxRestarts` exhausted, or `maxRestarts: 0`). A failure of a completion-aware `PodClique` not listed in `completedNames` triggers a gang restart and consumes budget while budget remains; it does not mark the replica as `Failed` until no restart budget remains.
+1. *Replica state*: a replica is **Completed** when all required completion-aware child `PodClique`s are `Completed` — either all completion-aware children, or the named children in `policy.completion.success.completedNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `completedNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware `PodClique` not listed in `completedNames` triggers a gang restart and consumes budget while budget remains, and fails the replica when no restart budget remains. A required child failure also fails the replica when no restart budget remains (`maxRestarts` exhausted, or `maxRestarts: 0`).
 
 2. *PCSG state*: the PCSG is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget that the remaining replicas cannot satisfy the completion criterion.
 
@@ -259,13 +259,13 @@ For a completion-aware `PodCliqueScalingGroup`, evaluation is two-level:
 
 For a completion-aware `PodCliqueSet`, evaluation follows the same two-level pattern as PCSG:
 
-1. *Replica state*: a replica is **Completed** when all required completion-aware direct children are `Completed` — either all completion-aware `PodClique`s and `PodCliqueScalingGroup`s, or the named children in `policy.completion.success.completedNames` when it is set. A replica is permanently **Failed** when a required direct child fails and no restart budget remains. A failure of a completion-aware direct child not listed in `completedNames` follows the same gang-restart behavior as PCSG: it consumes budget while budget remains, and fails the replica when no budget remains.
+1. *Replica state*: a replica is **Completed** when all required completion-aware direct children are `Completed` — either all completion-aware `PodClique`s and `PodCliqueScalingGroup`s, or the named children in `policy.completion.success.completedNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `completedNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware direct child not listed in `completedNames` follows the same gang-restart behavior as PCSG: it consumes budget while budget remains, and fails the replica when no budget remains. A required direct child failure also fails the replica when no restart budget remains.
 
 2. *PCS state*: the PCS is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget that the remaining replicas cannot satisfy the completion criterion.
 
 **General invariants**
 
-- `Failed` is irreversible: a resource that reaches `Failed` will not subsequently transition to `Completed`, by construction of the failure definition.
+- `Failed` is irreversible: once a resource reaches `Failed`, it will not subsequently transition to `Completed`.
 - Terminal states (`Completed`, `Failed`) are written to status before any pod cleanup begins.
 - Completion and failure are evaluated bottom-up, but cleanup after a parent reaches a terminal state is applied top-down to all non-terminal children in that terminal scope.
 - A terminal parent scope is a stop condition for descendants: child controllers must not recreate pods or child resources when their owning `PodCliqueScalingGroup` replica, `PodCliqueSet` replica, or `PodCliqueSet` resource is already terminal.
@@ -297,7 +297,7 @@ When a constituent completion-aware `PodClique` or `PodCliqueScalingGroup` withi
 **New conditions.** Two terminal conditions are added across all three resource types:
 
 - `Completed` — all required pods or completion-aware children have succeeded.
-- `Failed` — enough pods or children have failed that the completion criterion is permanently unreachable. Once set, this condition is irreversible.
+- `Failed` — the scope terminated unsuccessfully due to a required failure or exhausted restart budget. Once set, this condition is irreversible.
 
 These conditions are represented in the standard `conditions` list on each resource's status. Regular-mode resources never set these conditions. Grove does not introduce `Pending` or `Running` states for this feature.
 
@@ -372,7 +372,7 @@ Job support surfaces observability through status conditions and Kubernetes even
 | Condition | Status | Meaning |
 |---|---|---|
 | `Completed` | `True` | All required pods or completion-aware children succeeded. |
-| `Failed` | `True` | Completion is permanently unreachable. |
+| `Failed` | `True` | The scope terminated unsuccessfully due to a required failure or exhausted restart budget. |
 
 Regular-mode resources never set these conditions.
 
@@ -395,7 +395,7 @@ The `PodCliqueScalingGroupReplicaDeleteSuccessful` / `PodCliqueSetReplicaDeleteS
 - Validation: completion-aware `PodClique` accepts omitted `restartPolicy` or `restartPolicy: Never`; omitted `restartPolicy` is defaulted to `Never`; explicit `Always` and `OnFailure` are rejected for completion-aware `PodClique`s; explicit `Never` is rejected for regular `PodClique`s.
 - Validation: `policy.completion` on a parent with no completion-aware direct children is rejected, and `completedNames` entries refer only to completion-aware direct children.
 - Validation: autoscaling configuration and manual replica changes on resources with `policy.completion` or parent scopes containing completion-aware direct children are rejected.
-- Completion evaluation logic at each level: all-pods success → `Completed`; any pod failure → PCLQ `Failed`; named-children completion → PCSG/PCS replica `Completed`; non-`completedNames` child failure triggers restart but not immediate replica failure.
+- Completion evaluation logic at each level: all-pods success → `Completed`; any pod failure → PCLQ `Failed`; named-children completion → PCSG/PCS replica `Completed`; named-children completion takes precedence over non-`completedNames` child failure in the same snapshot; non-`completedNames` child failure before completion triggers restart and can fail the replica when budget is exhausted.
 - Failure evaluation: budget exhaustion → replica `Failed`; `Failed` is irreversible.
 - `replicaRestartCounts` increments correctly on each restart and is never decremented.
 - Terminal conditions are written before pod deletion (ordering guarantee).
