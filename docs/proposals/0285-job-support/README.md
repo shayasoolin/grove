@@ -119,19 +119,45 @@ Scaling and rolling updates are rejected for completion-aware workloads after cr
 
 ### New API Fields
 
-The new fields are nested under `spec.policy.completion`. The API shape is:
+The new fields are nested under `spec.policy.completion`. The API keeps the `PodClique` run policy separate from the parent run policy so each level exposes only fields that are meaningful for that level.
 
-**PodCliqueSpec**, **PodCliqueScalingGroupSpec**, and **PodCliqueSetSpec** each gain:
+**PodCliqueSpec** gains:
 
 ```go
-// Policy describes optional workload behavior controlled by Grove.
+// Policy describes optional run behavior controlled by Grove.
 // +optional
-Policy *WorkloadPolicy `json:"policy,omitempty"`
+Policy *PodCliqueRunPolicy `json:"policy,omitempty"`
 
-type WorkloadPolicy struct {
-    // Completion configures completion-aware behavior. On PodClique, setting at
-    // least one supported leaf enables completion-aware behavior. On parent
-    // resources, this configures evaluation of completion-aware direct children.
+type PodCliqueRunPolicy struct {
+    // Completion configures completion-aware behavior for this PodClique. Setting
+    // at least one supported leaf enables completion-aware behavior.
+    // +optional
+    Completion *PodCliqueCompletionPolicy `json:"completion,omitempty"`
+}
+
+type PodCliqueCompletionPolicy struct {
+    // Failure defines PodClique failure behavior.
+    // +optional
+    Failure *PodCliqueCompletionFailurePolicy `json:"failure,omitempty"`
+}
+
+type PodCliqueCompletionFailurePolicy struct {
+    // MaxRestarts is the maximum number of pod-level restart attempts allowed
+    // after failure. Only 0 is supported in this release.
+    // +optional
+    MaxRestarts *int32 `json:"maxRestarts,omitempty"`
+}
+```
+
+**PodCliqueScalingGroupSpec** and **PodCliqueSetSpec** gain:
+
+```go
+// Policy describes optional run behavior controlled by Grove.
+// +optional
+Policy *RunPolicy `json:"policy,omitempty"`
+
+type RunPolicy struct {
+    // Completion configures evaluation of completion-aware direct children.
     // +optional
     Completion *CompletionPolicy `json:"completion,omitempty"`
 }
@@ -156,18 +182,17 @@ type CompletionSuccessPolicy struct {
 
 type CompletionFailurePolicy struct {
     // MaxRestarts is the maximum number of restart attempts allowed after failure.
-    // On PodCliqueScalingGroup and PodCliqueSet it is a per-replica gang restart
-    // budget. On PodClique, only 0 is supported in this release.
+    // It is a per-replica gang restart budget.
     // +optional
     MaxRestarts *int32 `json:"maxRestarts,omitempty"`
 }
 ```
 
-`policy.completion.success.targetNames` is valid only for `PodCliqueScalingGroup` and `PodCliqueSet`. When set, it must be non-empty. `PodClique` always uses all-pods success: all pods must reach `pod phase=Succeeded`.
+`policy.completion.success.targetNames` exists only on `PodCliqueScalingGroup` and `PodCliqueSet`. When set, it must be non-empty. `PodClique` always uses all-pods success: all pods must reach `pod phase=Succeeded`.
 
-`policy.completion.failure.maxRestarts` is valid for all three resources. On `PodCliqueScalingGroup` and `PodCliqueSet`, values must be non-negative; when omitted by a completion-aware resource, Grove treats the budget as `0`. On `PodClique`, the only supported explicit value is `0`; values greater than `0` are future work because pod-level retry is not implemented.
+`policy.completion.failure.maxRestarts` exists on all three resources. On `PodCliqueScalingGroup` and `PodCliqueSet`, values must be non-negative; when omitted by a completion-aware parent, Grove treats the budget as `0`. On `PodClique`, the only supported explicit value is `0`; values greater than `0` are future work because pod-level retry is not implemented.
 
-When a resource is completion-aware and a policy value is omitted, Grove applies semantic defaults during evaluation: all pods are required for `PodClique` success, all completion-aware direct children are required for parent success, and `maxRestarts` is treated as `0`. Defaults do not make an empty `policy.completion` object valid.
+When a parent resource is completion-aware and a policy value is omitted, Grove applies semantic defaults during evaluation: all completion-aware direct children are required for parent success, and `maxRestarts` is treated as `0`. `PodClique` success always requires all pods to reach `pod phase=Succeeded`. Defaults do not make an empty `policy.completion` object valid.
 
 ### Examples
 
@@ -393,7 +418,7 @@ The `PodCliqueScalingGroupReplicaDeleteSuccessful` / `PodCliqueSetReplicaDeleteS
 
 **Unit tests**
 
-- Validation: empty `policy.completion` and empty nested `success` / `failure` objects are rejected; `targetNames` on `PodClique` is rejected; `targetNames` is non-empty when set; `PodClique` `maxRestarts` values greater than `0` are rejected.
+- Validation: empty `policy.completion` and empty nested `success` / `failure` objects are rejected; `PodCliqueRunPolicy` exposes only `completion.failure.maxRestarts`; `PodClique` `maxRestarts` values greater than `0` are rejected; parent `targetNames` is non-empty when set.
 - Validation: completion-aware `PodClique` accepts omitted `restartPolicy` or `restartPolicy: Never`; omitted `restartPolicy` is defaulted to `Never`; explicit `Always` and `OnFailure` are rejected for completion-aware `PodClique`s; explicit `Never` is rejected for regular `PodClique`s.
 - Validation: `policy.completion` on a parent with no completion-aware direct children is rejected, and `targetNames` entries refer only to completion-aware direct children.
 - Validation: autoscaling configuration, manual replica changes, and edits that would trigger rolling updates on resources with `policy.completion` or parent scopes containing completion-aware direct children are rejected.
