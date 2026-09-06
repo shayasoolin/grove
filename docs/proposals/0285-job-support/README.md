@@ -101,7 +101,7 @@ For completion-aware resources, `MinAvailableBreached`-based gang termination is
 Completion-aware `PodClique`s use `restartPolicy: Never`, which disables kubelet's in-place container restart. Grove is solely responsible for recreating pods on failure. At scale, this means every gang restart triggers a full pod deletion and recreation cycle — incurring Kubernetes API overhead and requiring the scheduler to re-place all pods from scratch. Re-scheduling at scale can take meaningful time and may not recover the same topology placement that the previous attempt had. This is a known limitation of the design.
 
 **Log loss on retry.**
-When a failed `PodClique` is deleted and recreated during a gang restart, terminal pods from the previous attempt are cascade-deleted along with it. Logs from failed attempts are not durably retained across retries. Mitigation: users who need per-attempt logs should rely on a cluster-level logging stack (e.g. Fluentd, Loki) rather than `kubectl logs`.
+When a gang scope is deleted and recreated during a gang restart, terminal pods from the previous attempt are cascade-deleted with it. Logs from failed attempts are not durably retained across retries. Mitigation: users who need per-attempt logs should rely on a cluster-level logging stack (e.g. Fluentd, Loki) rather than `kubectl logs`.
 
 ## Design Details
 
@@ -303,7 +303,7 @@ When a completion-aware `PodClique` reaches `Failed`, its completion-aware paren
 **PCLQ failure handled by completion-aware PCSG:**
 
 1. The PCSG increments `replicaRestartCounts[replicaIndex]`.
-2. If the budget is not exhausted: the PCSG deletes the failed `PodClique` and recreates it from the template. The new `PodClique` is placed by the scheduler as a complete gang before any pods run.
+2. If the budget is not exhausted: the PCSG deletes all `PodClique`s belonging to that PCSG replica and recreates them from the template. The recreated replica is scheduled as one gang, preserving the same gang boundary and topology-placement behavior as the initial launch.
 3. If the budget is exhausted: the PCSG marks that replica as failed and re-evaluates its own terminal conditions.
 
 **PCLQ or PCSG failure handled by completion-aware PCS:**
@@ -382,7 +382,7 @@ This distinction is important for partial-completion policies. For example, a `P
 - Controllers must not recreate pods, `PodClique`s, or `PodCliqueScalingGroup`s whose owning PCSG/PCS scope is already terminal.
 
 **During a gang restart:**
-- The failed `PodClique` is deleted entirely (not retained), which cascade-deletes its terminal pods as well. Logs from the failed attempt are not preserved across restarts. See [Log loss on retry](#limitationsrisks--mitigations).
+- The previous gang scope is deleted entirely (not retained), which cascade-deletes its terminal pods as well. Logs from the failed attempt are not preserved across restarts. See [Log loss on retry](#limitationsrisks--mitigations).
 
 **Terminal pod retention:**
 - Terminal pods from final terminal scopes remain available until the workload is deleted by the user or an external TTL policy (out of scope for this release).
