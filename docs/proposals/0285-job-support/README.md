@@ -49,7 +49,7 @@ This GREP closes that gap by extending Grove's existing hierarchy with completio
 - Define `policy.completion.failure.maxRestarts` on `PodClique`, `PodCliqueScalingGroup`, and `PodCliqueSet`; `PodClique` supports only `0` in this release, while `PodCliqueScalingGroup` and `PodCliqueSet` use it as a per-replica gang restart budget.
 - Define `policy.completion.success.targetNames` on `PodCliqueScalingGroup` and `PodCliqueSet` to support named-child completion criteria.
 - Support gang restart for completion-aware parent scopes: when a required `PodClique` or `PodCliqueScalingGroup` fails, the parent deletes and recreates the affected scope as a unit, consuming from a per-replica restart budget.
-- Guarantee that terminal states are persisted to status before any pod cleanup, and that terminal pods (`Succeeded`, `Failed`) from final terminal scopes are retained for log access until the workload is deleted.
+- Persist terminal states to status before Grove-initiated pod cleanup, and retain terminal pods (`Succeeded`, `Failed`) from final terminal scopes on a best-effort basis for log access until the workload is deleted.
 
 ### Non-Goals
 
@@ -58,7 +58,7 @@ This GREP closes that gap by extending Grove's existing hierarchy with completio
 - **No rolling updates for completion-aware workloads.** Changes that would update running job pods or change the generated child-resource hash are not supported. The validation webhook rejects these edits for resources with `policy.completion` and for parent scopes that contain completion-aware direct children.
 - `completions` and index-based completion — configurable completion counts and index-based filtering at the `PodCliqueScalingGroup` and `PodCliqueSet` levels. In this release, all replicas must complete successfully for a resource to be considered Completed.
 - Runtime deadline support (`maxRuntime`). Deadline semantics require a separate design for resource-level versus replica-level or attempt-level limits, and whether deadlines reset on gang restart. Since runtime deadlines are orthogonal to completion tracking and gang restart, they are deferred to keep the first release focused.
-- Pod cleanup policies other than the fixed default (retain terminal pods from final terminal scopes, delete active pods on terminal state).
+- Pod cleanup policies other than the fixed default (best-effort retention of terminal pods from final terminal scopes, delete active pods on terminal state).
 - TTL-based automatic workload deletion after completion.
 
 ## Proposal
@@ -76,7 +76,7 @@ Two nested policy fields control completion-aware behavior:
 
 Regular-mode `PodClique`s within a `PodCliqueScalingGroup` or `PodCliqueSet` are excluded from completion evaluation. A resource can be Completed even if some of its children remain running in regular mode.
 
-**Gang termination for completion-aware resources.** Gang scheduling is unchanged: `minAvailable` continues to gate pod launch until the full gang can be placed simultaneously, on initial start and after each restart. `minAvailable` also continues to be passed to scheduler backends as the gang's minimum member count. For gang termination, Grove does not set `MinAvailableBreached` on completion-aware resources; it uses the `Failed` condition as the termination signal and fires immediately without `terminationDelay`. A pod failure or eviction in a completion-aware `PodClique` moves the pod to `pod phase=Failed`, causing the owning `PodClique` to set the `Failed` condition. The completion-aware parent then evaluates the affected replica: if restart budget remains, Grove deletes and recreates the replica as a gang; if the budget is exhausted, Grove marks the replica failed and re-evaluates the parent terminal conditions.
+**Gang termination for completion-aware resources.** Gang scheduling is unchanged: `minAvailable` continues to gate pod launch until the full gang can be placed simultaneously, on initial start and after each restart. `minAvailable` also continues to be passed to scheduler backends as the gang's minimum member count. For gang termination, Grove does not set `MinAvailableBreached` on completion-aware resources; it uses the `Failed` condition as the termination signal and fires immediately without `terminationDelay`. A failed pod in a completion-aware `PodClique` causes the owning `PodClique` to set the `Failed` condition. The completion-aware parent then evaluates the affected replica: if restart budget remains, Grove deletes and recreates the replica as a gang; if the budget is exhausted, Grove marks the replica failed and re-evaluates the parent terminal conditions.
 
 ### User Stories
 
@@ -95,13 +95,13 @@ As a machine learning engineer running a leader-worker training job, I want the 
 ### Limitations/Risks & Mitigations
 
 **Application-level hangs without pod failure.**
-For completion-aware resources, Grove does not set `MinAvailableBreached`; ordinary pod failures and evictions are still handled through the `Failed` condition. The pod reaches `pod phase=Failed`, the owning `PodClique` sets `Failed`, and Grove terminates or restarts the gang through the failure path. The remaining risk is narrower: if the cluster does not surface a failed pod and the application keeps running despite a lost peer or broken collective, Grove cannot infer the application-level deadlock from availability alone. Workloads should use framework-level failure detection, such as rendezvous timeouts, and exit non-zero when peer loss makes progress impossible.
+For completion-aware resources, Grove does not set `MinAvailableBreached`; ordinary pod failures and Kubernetes disruption/deletion paths are handled through the `Failed` condition when the pod fails or can no longer be accounted as `Succeeded`. This includes `pod phase=Failed` and expected pods that are deleted or disappear before success due to eviction, preemption, force deletion, or node-loss cleanup. The remaining risk is narrower: if the cluster does not surface pod failure or deletion and the application keeps running despite a lost peer or broken collective, Grove cannot infer the application-level deadlock from availability alone. Workloads should use framework-level failure detection, such as rendezvous timeouts, and exit non-zero when peer loss makes progress impossible.
 
 **API overhead and topology placement loss at scale.**
 Completion-aware `PodClique`s use `restartPolicy: Never`, which disables kubelet's in-place container restart. Grove is solely responsible for recreating pods on failure. At scale, this means every gang restart triggers a full pod deletion and recreation cycle — incurring Kubernetes API overhead and requiring the scheduler to re-place all pods from scratch. Re-scheduling at scale can take meaningful time and may not recover the same topology placement that the previous attempt had. This is a known limitation of the design.
 
-**Log loss on retry.**
-When a gang scope is deleted and recreated during a gang restart, terminal pods from the previous attempt are cascade-deleted with it. Logs from failed attempts are not durably retained across retries. Mitigation: users who need per-attempt logs should rely on a cluster-level logging stack (e.g. Fluentd, Loki) rather than `kubectl logs`.
+**Log loss on retry and external cleanup.**
+When a gang scope is deleted and recreated during a gang restart, terminal pods from the previous attempt are cascade-deleted with it. Logs from failed attempts are not durably retained across retries. Terminal pod retention for final terminal scopes is also best-effort: external eviction, force deletion, PodGC, or TTL cleanup may remove pod objects before Grove observes them, so they may not be available for debugging. Mitigation: users who need per-attempt logs should rely on a cluster-level logging stack (e.g. Fluentd, Loki) rather than `kubectl logs`.
 
 ## Design Details
 
@@ -269,7 +269,7 @@ Completion and failure are evaluated independently at each level, using only the
 
 **PodClique**
 
-A completion-aware `PodClique` is **Completed** when all of its pods have exited with code 0 (`pod phase=Succeeded`). It is **Failed** when any pod exits with a non-zero code (`pod phase=Failed`), since pod-level retry is not supported and a single failure makes the all-pods completion criterion unreachable.
+A completion-aware `PodClique` is **Completed** when all of its pods have exited with code 0 (`pod phase=Succeeded`). It is **Failed** when any expected pod is observed as failed (`pod phase=Failed`) or is deleted/disrupted before reaching `Succeeded`, since pod-level retry is not supported and a single failure makes the all-pods completion criterion unreachable. This includes pods observed as failed, terminating, disrupted, or missing before `Succeeded` due to API eviction, scheduler preemption, force deletion, taint-based eviction, or node-loss cleanup; pods deleted because an owning parent scope is already terminal do not cause the `PodClique` to set `Failed`.
 
 Regular-mode `PodClique`s never set `Completed` or `Failed`.
 
@@ -292,7 +292,7 @@ For a completion-aware `PodCliqueSet`, evaluation follows the same two-level pat
 **General invariants**
 
 - `Failed` is irreversible: once a resource reaches `Failed`, it will not subsequently transition to `Completed`.
-- Terminal states (`Completed`, `Failed`) are written to status before any pod cleanup begins.
+- Terminal states (`Completed`, `Failed`) are written to status before any Grove-initiated pod cleanup begins.
 - Completion and failure are evaluated bottom-up, but cleanup after a parent reaches a terminal state is applied top-down to all non-terminal children in that terminal scope.
 - A terminal parent scope is a stop condition for descendants: child controllers must not recreate pods or child resources when their owning `PodCliqueScalingGroup` replica, `PodCliqueSet` replica, or `PodCliqueSet` resource is already terminal.
 
@@ -314,7 +314,7 @@ When a constituent completion-aware `PodClique` or `PodCliqueScalingGroup` withi
 2. If the budget is not exhausted: the PCS deletes all constituents of that replica (all `PodClique`s and `PodCliqueScalingGroup`s) and recreates them together from the template.
 3. If the budget is exhausted: the PCS marks that replica as failed and re-evaluates its own terminal conditions.
 
-**Ordering guarantee.** In all cases, terminal conditions and updated `replicaRestartCounts` are persisted to status before any deletion begins. If the controller restarts mid-cleanup, it can resume from the persisted state without double-counting restarts or re-creating resources that were already deleted. Cleanup of active (non-terminal) pods when a resource reaches a terminal state is described in [Cleanup Behavior](#cleanup-behavior).
+**Ordering guarantee.** In all cases, terminal conditions and updated `replicaRestartCounts` are persisted to status before any Grove-initiated deletion begins. If the controller restarts mid-cleanup, it can resume from the persisted state without double-counting restarts or re-creating resources that were already deleted. Cleanup of active (non-terminal) pods when a resource reaches a terminal state is described in [Cleanup Behavior](#cleanup-behavior).
 
 **Gang scheduling on restart.** Recreated pods are placed by the scheduler as a complete gang, consistent with the initial launch behavior.
 
@@ -361,13 +361,13 @@ This field accumulates across restarts and is never decremented.
 
 ### Cleanup Behavior
 
-Grove applies a single fixed cleanup policy for completion-aware resources: terminal state is calculated bottom-up, but cleanup is applied top-down. Active pods are deleted when the owning completion-aware scope reaches a terminal state; terminal pods from final terminal scopes are retained.
+Grove applies a single fixed cleanup policy for completion-aware resources: terminal state is calculated bottom-up, but cleanup is applied top-down. Active pods are deleted when the owning completion-aware scope reaches a terminal state; terminal pods from final terminal scopes are retained on a best-effort basis.
 
 This distinction is important for partial-completion policies. For example, a `PodCliqueScalingGroup` replica may be considered `Completed` because the `PodClique`s listed in `targetNames` completed successfully, while other child `PodClique`s are still running. Once the replica is terminal, the PCSG controller deletes the non-terminal child `PodClique`s or active pods in that replica so they stop consuming resources. Similarly, once a `PodCliqueSet` replica or the whole PCS reaches a terminal state, the PCS controller cleans up active child `PodClique`s and `PodCliqueScalingGroup`s in that completed or failed scope.
 
 **On `PodClique` terminal state (`Completed` or `Failed`):**
 - Delete all active pods (`Pending`, `Running`) in the `PodClique`.
-- Retain terminal pods (`Succeeded`, `Failed`) for log access via `kubectl logs`, unless the `PodClique` is deleted as part of a gang restart.
+- Retain terminal pods (`Succeeded`, `Failed`) for log access via `kubectl logs` on a best-effort basis, unless the `PodClique` is deleted as part of a gang restart or the pod was already removed by external cleanup.
 
 **On `PodCliqueScalingGroup` replica terminal state:**
 - Delete active pods and non-terminal child `PodClique`s belonging to that replica.
@@ -385,10 +385,10 @@ This distinction is important for partial-completion policies. For example, a `P
 - The previous gang scope is deleted entirely (not retained), which cascade-deletes its terminal pods as well. Logs from the failed attempt are not preserved across restarts. See [Log loss on retry](#limitationsrisks--mitigations).
 
 **Terminal pod retention:**
-- Terminal pods from final terminal scopes remain available until the workload is deleted by the user or an external TTL policy (out of scope for this release).
+- Grove does not delete terminal pods from final terminal scopes. When the pod object remains in the API, it stays available until the workload is deleted by the user or an external TTL policy removes it. This is a best-effort debugging aid, not a guarantee against external eviction, force deletion, PodGC, or other cleanup.
 
 **Ordering:**
-- Terminal conditions are always written to status before any pod deletion begins.
+- Terminal conditions are always written to status before any Grove-initiated pod deletion begins.
 
 ### Monitoring
 
@@ -422,10 +422,10 @@ The `PodCliqueScalingGroupReplicaDeleteSuccessful` / `PodCliqueSetReplicaDeleteS
 - Validation: completion-aware `PodClique` accepts omitted `restartPolicy` or `restartPolicy: Never`; omitted `restartPolicy` is defaulted to `Never`; explicit `Always` and `OnFailure` are rejected for completion-aware `PodClique`s; explicit `Never` is rejected for regular `PodClique`s.
 - Validation: `policy.completion` on a parent with no completion-aware direct children is rejected, and `targetNames` entries refer only to completion-aware direct children.
 - Validation: autoscaling configuration, manual replica changes, and edits that would trigger rolling updates on resources with `policy.completion` or parent scopes containing completion-aware direct children are rejected.
-- Completion evaluation logic at each level: all-pods success → `Completed`; any pod failure → PCLQ `Failed`; named-child completion → PCSG/PCS replica `Completed`; named-child completion takes precedence over failures outside `targetNames` in the same snapshot; failures outside `targetNames` before completion trigger restart and can fail the replica when budget is exhausted.
+- Completion evaluation logic at each level: all-pods success → `Completed`; pod failure or disruption/absence before success → PCLQ `Failed`; named-child completion → PCSG/PCS replica `Completed`; named-child completion takes precedence over failures outside `targetNames` in the same snapshot; failures outside `targetNames` before completion trigger restart and can fail the replica when budget is exhausted.
 - Failure evaluation: budget exhaustion → replica `Failed`; `Failed` is irreversible.
 - `replicaRestartCounts` increments correctly on each restart and is never decremented.
-- Terminal conditions are written before pod deletion (ordering guarantee).
+- Terminal conditions are written before Grove-initiated pod deletion (ordering guarantee).
 
 **E2e tests** (new file: `e2e/tests/job_support_test.go`)
 
