@@ -76,7 +76,7 @@ Two nested policy fields control completion-aware behavior:
 
 Regular-mode `PodClique`s within a `PodCliqueScalingGroup` or `PodCliqueSet` are excluded from completion evaluation. A resource can be Completed even if some of its children remain running in regular mode.
 
-**Gang termination for completion-aware resources.** Gang scheduling is unchanged: `minAvailable` continues to gate pod launch until the full gang can be placed simultaneously, on initial start and after each restart. `minAvailable` also continues to be passed to scheduler backends as the gang's minimum member count. For gang termination, Grove does not set `MinAvailableBreached` on completion-aware resources; it uses the `Failed` condition as the termination signal and fires immediately without `terminationDelay`. A failed pod in a completion-aware `PodClique` causes the owning `PodClique` to set the `Failed` condition. The completion-aware parent then evaluates the affected replica: if restart budget remains, Grove deletes and recreates the replica as a gang; if the budget is exhausted, Grove marks the replica failed and re-evaluates the parent terminal conditions.
+**Gang termination for completion-aware resources.** Gang scheduling is unchanged: `minAvailable` continues to gate pod launch until the full gang can be placed simultaneously, on initial start and after each restart. `minAvailable` also continues to be passed to scheduler backends as the gang's minimum member count. Completion-aware failures do not use `MinAvailableBreached`; the `Failed` condition is the termination signal, and the parent reacts immediately without waiting for `terminationDelay`. Regular-mode direct children keep `MinAvailableBreached`. If a regular-mode child breaches `minAvailable` in a mixed parent, Grove handles it through availability-based recovery, and that action does not increment `replicaRestartCounts` or consume `policy.completion.failure.maxRestarts`. A failed pod in a completion-aware `PodClique` causes the owning `PodClique` to set the `Failed` condition. The completion-aware parent then evaluates the affected replica: if restart budget remains, Grove deletes and recreates the replica as a gang; if the budget is exhausted, Grove marks the replica failed and re-evaluates the parent terminal conditions.
 
 ### User Stories
 
@@ -95,7 +95,7 @@ As a machine learning engineer running a leader-worker training job, I want the 
 ### Limitations/Risks & Mitigations
 
 **Application-level hangs without pod failure.**
-For completion-aware resources, Grove does not set `MinAvailableBreached`; ordinary pod failures and Kubernetes disruption/deletion paths are handled through the `Failed` condition when the pod fails or can no longer be accounted as `Succeeded`. This includes `pod phase=Failed` and expected pods that are deleted or disappear before success due to eviction, preemption, force deletion, or node-loss cleanup. The remaining risk is narrower: if the cluster does not surface pod failure or deletion and the application keeps running despite a lost peer or broken collective, Grove cannot infer the application-level deadlock from availability alone. Workloads should use framework-level failure detection, such as rendezvous timeouts, and exit non-zero when peer loss makes progress impossible.
+Completion-aware `PodClique`s do not use `MinAvailableBreached` for availability-based recovery; ordinary pod failures and Kubernetes disruption/deletion paths are handled through the `Failed` condition when the pod fails or can no longer be accounted as `Succeeded`. This includes `pod phase=Failed` and expected pods that are deleted or disappear before success due to eviction, preemption, force deletion, or node-loss cleanup. Regular-mode children still use `MinAvailableBreached`, so below-minAvailable cases are still handled in mixed workloads. The remaining risk is narrower: if the cluster does not surface pod failure or deletion and the application keeps running despite a lost peer or broken collective, Grove cannot infer the application-level deadlock from availability alone. Workloads should use framework-level failure detection, such as rendezvous timeouts, and exit non-zero when peer loss makes progress impossible.
 
 **API overhead and topology placement loss at scale.**
 Completion-aware `PodClique`s use `restartPolicy: Never`, which disables kubelet's in-place container restart. Grove is solely responsible for recreating pods on failure. At scale, this means every gang restart triggers a full pod deletion and recreation cycle — incurring Kubernetes API overhead and requiring the scheduler to re-place all pods from scratch. Re-scheduling at scale can take meaningful time and may not recover the same topology placement that the previous attempt had. This is a known limitation of the design.
@@ -271,13 +271,13 @@ Completion and failure are evaluated independently at each level, using only the
 
 A completion-aware `PodClique` is **Completed** when all of its pods have exited with code 0 (`pod phase=Succeeded`). It is **Failed** when any expected pod is observed as failed (`pod phase=Failed`) or is deleted/disrupted before reaching `Succeeded`, since pod-level retry is not supported and a single failure makes the all-pods completion criterion unreachable. This includes pods observed as failed, terminating, disrupted, or missing before `Succeeded` due to API eviction, scheduler preemption, force deletion, taint-based eviction, or node-loss cleanup; pods deleted because an owning parent scope is already terminal do not cause the `PodClique` to set `Failed`.
 
-Regular-mode `PodClique`s never set `Completed` or `Failed`.
+Regular-mode `PodClique`s never set `Completed` or `Failed` and keep `MinAvailableBreached`.
 
 **PodCliqueScalingGroup**
 
 For a completion-aware `PodCliqueScalingGroup`, evaluation is two-level:
 
-1. *Replica state*: a replica is **Completed** when all required completion-aware child `PodClique`s are `Completed` — either all completion-aware children, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware `PodClique` not listed in `targetNames` triggers a gang restart and consumes budget while budget remains, and fails the replica when no restart budget remains. A required child failure also fails the replica when no restart budget remains (`maxRestarts` exhausted, or `maxRestarts: 0`).
+1. *Replica state*: a replica is **Completed** when all required completion-aware child `PodClique`s are `Completed` — either all completion-aware children, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware `PodClique` not listed in `targetNames` triggers a gang restart and consumes budget while budget remains, and fails the replica when no restart budget remains. A required child failure also fails the replica when no restart budget remains (`maxRestarts` exhausted, or `maxRestarts: 0`). Regular-mode child `PodClique`s are not part of PCSG completion evaluation. If one reports `MinAvailableBreached=True`, Grove handles it through availability-based recovery; this does not increment the PCSG `replicaRestartCounts` entry or consume the PCSG `maxRestarts` budget.
 
 2. *PCSG state*: the PCSG is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget such that the remaining replicas cannot satisfy the completion criterion.
 
@@ -285,7 +285,7 @@ For a completion-aware `PodCliqueScalingGroup`, evaluation is two-level:
 
 For a completion-aware `PodCliqueSet`, evaluation follows the same two-level pattern as PCSG:
 
-1. *Replica state*: a replica is **Completed** when all required completion-aware direct children are `Completed` — either all completion-aware `PodClique`s and `PodCliqueScalingGroup`s, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware direct child not listed in `targetNames` follows the same gang-restart behavior as PCSG: it consumes budget while budget remains, and fails the replica when no budget remains. A required direct child failure also fails the replica when no restart budget remains.
+1. *Replica state*: a replica is **Completed** when all required completion-aware direct children are `Completed` — either all completion-aware `PodClique`s and `PodCliqueScalingGroup`s, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware direct child not listed in `targetNames` follows the same gang-restart behavior as PCSG: it consumes budget while budget remains, and fails the replica when no budget remains. A required direct child failure also fails the replica when no restart budget remains. Regular-mode direct children (`PodClique`s or `PodCliqueScalingGroup`s) are not part of PCS completion evaluation. If one reports `MinAvailableBreached=True`, Grove handles it through availability-based recovery; this does not increment the PCS `replicaRestartCounts` entry or consume the PCS `maxRestarts` budget.
 
 2. *PCS state*: the PCS is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget such that the remaining replicas cannot satisfy the completion criterion.
 
@@ -299,6 +299,8 @@ For a completion-aware `PodCliqueSet`, evaluation follows the same two-level pat
 ### Gang Restart Flow
 
 When a completion-aware `PodClique` reaches `Failed`, its completion-aware parent evaluates whether to restart or mark the replica as terminally failed.
+
+Availability-based recovery caused by `MinAvailableBreached` on a regular-mode child is not part of this flow and does not affect restart counters or completion restart budgets.
 
 **PCLQ failure handled by completion-aware PCSG:**
 
@@ -424,7 +426,7 @@ The `PodCliqueScalingGroupReplicaDeleteSuccessful` / `PodCliqueSetReplicaDeleteS
 - Validation: autoscaling configuration, manual replica changes, and edits that would trigger rolling updates on resources with `policy.completion` or parent scopes containing completion-aware direct children are rejected.
 - Completion evaluation logic at each level: all-pods success → `Completed`; pod failure or disruption/absence before success → PCLQ `Failed`; named-child completion → PCSG/PCS replica `Completed`; named-child completion takes precedence over failures outside `targetNames` in the same snapshot; failures outside `targetNames` before completion trigger restart and can fail the replica when budget is exhausted.
 - Failure evaluation: budget exhaustion → replica `Failed`; `Failed` is irreversible.
-- `replicaRestartCounts` increments correctly on each restart and is never decremented.
+- `replicaRestartCounts` increments correctly on each completion-aware gang restart and is never decremented; availability-based recovery from regular-mode `MinAvailableBreached` does not increment it or consume `maxRestarts`.
 - Terminal conditions are written before Grove-initiated pod deletion (ordering guarantee).
 
 **E2e tests** (new file: `e2e/tests/job_support_test.go`)
@@ -433,7 +435,7 @@ The `PodCliqueScalingGroupReplicaDeleteSuccessful` / `PodCliqueSetReplicaDeleteS
 - **Pod failure → gang restart**: one pod fails → PCLQ fails → parent restarts the gang → restart budget decremented.
 - **Budget exhaustion**: replica exhausts `maxRestarts` → PCSG/PCS fails.
 - **Leader-driven completion**: leader exits 0, workers still running → PCSG replica `Completed`, active worker pods cleaned up.
-- **Mixed completion-aware/regular**: completion-aware PCLQ completes alongside regular PCLQ → parent reaches `Completed`.
+- **Mixed completion-aware/regular**: completion-aware PCLQ completes alongside regular PCLQ → parent reaches `Completed`; regular-mode `MinAvailableBreached` remains handled by availability-based recovery and does not consume `maxRestarts`.
 - **Gang scheduling on restart**: after a gang restart, verify that a new PCLQ / PCSG / PCS replica is created and the existing gang scheduling machinery places it as a complete gang.
 - **Conditions and events**: verify `Completed=True` / `Failed=True` conditions and `GangRestartTriggered` / `JobCompleted` / `JobFailed` events are emitted at the right moments.
 
