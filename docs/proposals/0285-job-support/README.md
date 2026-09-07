@@ -54,7 +54,7 @@ This GREP closes that gap by extending Grove's existing hierarchy with completio
 ### Non-Goals
 
 - **No pod-level retry.** A failed pod within a `PodClique` is not replaced in isolation. `PodClique` `policy.completion.failure.maxRestarts` may only be `0` in this release; values greater than `0` are future work. This is acceptable for the first release because current distributed training frameworks generally do not tolerate replacing a single failed worker independently. A single worker failure usually requires restarting the whole group, so gang restart covers the common recovery path.
-- **No scaling for completion-aware workloads.** Completion-aware workloads use fixed replica counts. Grove rejects autoscaling configuration and manual replica changes for resources with `policy.completion` and for parent scopes that contain completion-aware direct children.
+- **No scaling for completion-aware workloads.** Completion-aware workloads use fixed replica counts. Grove rejects autoscaling configuration and manual replica changes for resources with `policy.completion` and for parent scopes that contain completion-aware direct children. As a consequence, this release also does not support elastic training workloads that dynamically change membership or continue with a partial worker set, such as TorchElastic, Elastic Horovod, or Ray Train.
 - **No rolling updates for completion-aware workloads.** Changes that would update running job pods or change the generated child-resource hash are not supported. The validation webhook rejects these edits for resources with `policy.completion` and for parent scopes that contain completion-aware direct children.
 - `completions` and index-based completion — configurable completion counts and index-based filtering at the `PodCliqueScalingGroup` and `PodCliqueSet` levels. In this release, all replicas must complete successfully for a resource to be considered Completed.
 - Runtime deadline support (`maxRuntime`). Completion is decided by pod exit codes, not by a clock, so `maxRuntime` can be added later without changing completion tracking. Deadline semantics still need a separate design for resource-level versus replica-level or attempt-level limits, and whether deadlines reset on gang restart. Because this interaction is limited and self-contained, `maxRuntime` is deferred to keep the first release focused.
@@ -67,7 +67,7 @@ Job support extends Grove's existing workload hierarchy with completion-aware be
 
 Completion and failure are evaluated bottom-up. At each level, the resource is **Completed** when all required pods or completion-aware direct children have succeeded, and **Failed** when a required failure or exhausted gang-attempt budget makes the current scope terminate unsuccessfully. If a named-child completion criterion is already satisfied in the same reconciliation snapshot, completion takes precedence over failures from completion-aware children outside that criterion. Once a resource reaches **Failed**, it cannot subsequently become **Completed**.
 
-When a completion-aware `PodClique` fails, its completion-aware parent (`PodCliqueScalingGroup` or `PodCliqueSet`) deletes and recreates the affected gang as a unit. This consumes one restart from the parent's per-replica budget. A `PodCliqueScalingGroup` or `PodCliqueSet` fails when enough of its replicas have exhausted their budget that the completion target is unreachable.
+When a completion-aware `PodClique` fails, its completion-aware parent (`PodCliqueScalingGroup` or `PodCliqueSet`) deletes and recreates the affected gang as a unit. This consumes one restart from the parent's per-replica budget. A `PodCliqueScalingGroup` or `PodCliqueSet` fails when enough of its replicas have exhausted their budget such that the completion target is unreachable.
 
 Two nested policy fields control completion-aware behavior:
 
@@ -279,7 +279,7 @@ For a completion-aware `PodCliqueScalingGroup`, evaluation is two-level:
 
 1. *Replica state*: a replica is **Completed** when all required completion-aware child `PodClique`s are `Completed` — either all completion-aware children, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware `PodClique` not listed in `targetNames` triggers a gang restart and consumes budget while budget remains, and fails the replica when no restart budget remains. A required child failure also fails the replica when no restart budget remains (`maxRestarts` exhausted, or `maxRestarts: 0`).
 
-2. *PCSG state*: the PCSG is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget that the remaining replicas cannot satisfy the completion criterion.
+2. *PCSG state*: the PCSG is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget such that the remaining replicas cannot satisfy the completion criterion.
 
 **PodCliqueSet**
 
@@ -287,7 +287,7 @@ For a completion-aware `PodCliqueSet`, evaluation follows the same two-level pat
 
 1. *Replica state*: a replica is **Completed** when all required completion-aware direct children are `Completed` — either all completion-aware `PodClique`s and `PodCliqueScalingGroup`s, or the named children in `policy.completion.success.targetNames` when it is set. Evaluation checks this success criterion first in each reconciliation snapshot; if it is satisfied, failures from completion-aware children outside `targetNames` do not trigger a restart or consume budget. If the success criterion is not yet satisfied, a failure of a completion-aware direct child not listed in `targetNames` follows the same gang-restart behavior as PCSG: it consumes budget while budget remains, and fails the replica when no budget remains. A required direct child failure also fails the replica when no restart budget remains.
 
-2. *PCS state*: the PCS is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget that the remaining replicas cannot satisfy the completion criterion.
+2. *PCS state*: the PCS is **Completed** when all replicas are `Completed`. It is **Failed** when enough replicas have exhausted their budget such that the remaining replicas cannot satisfy the completion criterion.
 
 **General invariants**
 
